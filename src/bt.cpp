@@ -14,6 +14,7 @@
 #include "btstack_tlv_flash_bank.h"
 #include "classic/btstack_link_key_db_tlv.h"
 #include "pico/btstack_flash_bank.h"
+#include "pico/flash.h"
 #include "gap.h"
 #include "l2cap.h"
 #include "pico/cyw43_arch.h"
@@ -84,6 +85,16 @@ struct FlashBankDiagnostics {
 };
 
 static FlashBankDiagnostics flash_bank_diagnostics{};
+static volatile uint32_t flash_safety_probe_count = 0;
+
+static void __not_in_flash_func(flash_safety_probe)(void *) {
+    flash_safety_probe_count++;
+}
+
+static void diagnostic_flash_safe_probe(const char *operation) {
+    const int rc = flash_safe_execute(flash_safety_probe, nullptr, 1000);
+    printf("[TLV] flash_safe_execute %s rc=%d\n", operation, rc);
+}
 
 static uint32_t diagnostic_flash_bank_get_size(void *context) {
     const auto *diagnostics = static_cast<FlashBankDiagnostics *>(context);
@@ -102,6 +113,7 @@ static void diagnostic_flash_bank_read(void *context, int bank, uint32_t offset,
 
 static void diagnostic_flash_bank_erase(void *context, int bank) {
     auto *diagnostics = static_cast<FlashBankDiagnostics *>(context);
+    diagnostic_flash_safe_probe("before erase");
     diagnostics->impl->erase(nullptr, bank);
 
     uint8_t verify[16];
@@ -118,6 +130,7 @@ static void diagnostic_flash_bank_erase(void *context, int bank) {
 
 static void diagnostic_flash_bank_write(void *context, int bank, uint32_t offset, const uint8_t *data, uint32_t size) {
     auto *diagnostics = static_cast<FlashBankDiagnostics *>(context);
+    diagnostic_flash_safe_probe("before write");
     diagnostics->impl->write(nullptr, bank, offset, data, size);
 
     uint8_t verify[32];
