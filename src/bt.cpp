@@ -11,6 +11,8 @@
 #include "audio.h"
 #include "btstack_event.h"
 #include "btstack_tlv.h"
+#include "btstack_tlv_flash_bank.h"
+#include "pico/btstack_flash_bank.h"
 #include "gap.h"
 #include "l2cap.h"
 #include "pico/cyw43_arch.h"
@@ -150,6 +152,15 @@ int bt_init() {
     queue_init(&send_fifo, sizeof(send_element), 10);
 
     bt_l2cap_init();
+
+    // Initialize flash-backed TLV so BTstack can persist and retrieve link keys
+    // across connections. Without this call btstack_tlv_set_instance is never
+    // called, HCI_EVENT_LINK_KEY_NOTIFICATION has nowhere to write, and every
+    // PS-button reconnect fails with HCI_LINK_KEY_REQUEST_NEGATIVE_REPLY.
+    static btstack_tlv_flash_bank_t btstack_tlv_flash_bank_context;
+    const btstack_tlv_t *tlv_impl = btstack_tlv_flash_bank_init_instance(
+        &btstack_tlv_flash_bank_context, pico_flash_bank_instance(), NULL);
+    btstack_tlv_set_instance(tlv_impl, &btstack_tlv_flash_bank_context);
 
     // SSP (Secure Simple Pairing)
     gap_ssp_set_enable(true);
