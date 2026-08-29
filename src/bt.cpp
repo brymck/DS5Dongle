@@ -140,8 +140,8 @@ void bt_l2cap_init() {
     l2cap_add_event_handler(&l2cap_event_callback_registration);
     // 修复重连后自动断开的关键点
     sdp_init();
-    l2cap_register_service(l2cap_packet_handler, PSM_HID_CONTROL, MTU_CONTROL, LEVEL_2);
-    l2cap_register_service(l2cap_packet_handler, PSM_HID_INTERRUPT, MTU_INTERRUPT, LEVEL_2);
+    l2cap_register_service(l2cap_packet_handler, PSM_HID_CONTROL, MTU_CONTROL, LEVEL_0);
+    l2cap_register_service(l2cap_packet_handler, PSM_HID_INTERRUPT, MTU_INTERRUPT, LEVEL_0);
 
     l2cap_init();
 }
@@ -505,35 +505,10 @@ static void __not_in_flash_func(hci_packet_handler)(uint8_t packet_type, uint16_
             break;
         }
 
-        case HCI_EVENT_LINK_KEY_REQUEST: {
-            bd_addr_t addr;
-            hci_event_link_key_request_get_bd_addr(packet, addr);
-            link_key_t link_key;
-            link_key_type_t link_key_type;
-            bool link = gap_get_link_key_for_bd_addr(addr, link_key, &link_key_type);
-            printf("[HCI] Link key: ");
-            for (int i = 0; i < sizeof(link_key_t); i++) {
-                printf("%02X", link_key[i]);
-            }
-            printf("\n");
-            if (link) {
-                printf("[HCI] Link key request from %s, reply stored key type=%u\n", bd_addr_to_str(addr),
-                       (unsigned int) link_key_type);
-                hci_send_cmd(&hci_link_key_request_reply, addr, link_key);
-            } else {
-                printf("[HCI] Link key request from %s, no key, force re-pair\n", bd_addr_to_str(addr));
-                hci_send_cmd(&hci_link_key_request_negative_reply, addr);
-            }
-            break;
-        }
-
-        case HCI_EVENT_USER_CONFIRMATION_REQUEST: {
-            bd_addr_t addr;
-            hci_event_user_confirmation_request_get_bd_addr(packet, addr);
-            printf("[HCI] User confirmation request from %s, accept\n", bd_addr_to_str(addr));
-            hci_send_cmd(&hci_user_confirmation_request_reply, addr);
-            break;
-        }
+        // HCI_EVENT_LINK_KEY_REQUEST and HCI_EVENT_USER_CONFIRMATION_REQUEST are
+        // handled internally by BTstack's SSP stack (gap_ssp_set_enable). Handling
+        // them here too caused duplicate replies that corrupted SSP state and
+        // prevented link keys from being written to TLV flash.
 
         case HCI_EVENT_PIN_CODE_REQUEST: {
             bd_addr_t addr;
