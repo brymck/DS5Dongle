@@ -350,6 +350,7 @@ target_link_libraries(ds5-bridge
         hardware_timer
         hardware_flash
         pico_btstack_classic
+        pico_btstack_flash_bank
 #        pico_cyw43_arch_threadsafe_background
         pico_cyw43_arch_poll
         pico_btstack_cyw43

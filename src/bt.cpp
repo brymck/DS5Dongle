@@ -493,7 +493,7 @@ static void __not_in_flash_func(hci_packet_handler)(uint8_t packet_type, uint16_
                 acl_handle = handle;
                 bt_rssi = 0;
                 bd_addr_copy(current_device_addr, conn_addr);
-                printf("[HCI] ACL connected handle=0x%04X\n", handle);
+                printf("[HCI] ACL connected handle=0x%04X addr=%s\n", handle, bd_addr_to_str(conn_addr));
                 if (new_pair) {
                     // For Pico-initiated (PS+Share) connections, open the HID control
                     // channel immediately. LEVEL_2 security on the service drives
@@ -519,6 +519,17 @@ static void __not_in_flash_func(hci_packet_handler)(uint8_t packet_type, uint16_
         // them here too caused duplicate replies that corrupted SSP state and
         // prevented link keys from being written to TLV flash.
 
+        case HCI_EVENT_LINK_KEY_NOTIFICATION: {
+            bd_addr_t addr;
+            reverse_bd_addr(&packet[2], addr);
+            const uint8_t *key = &packet[2 + BD_ADDR_LEN];
+            const uint8_t key_type = packet[2 + BD_ADDR_LEN + LINK_KEY_LEN];
+            printf("[HCI] Link key stored for %s type=%u key=", bd_addr_to_str(addr), key_type);
+            for (int i = 0; i < LINK_KEY_LEN; i++) printf("%02X", key[i]);
+            printf("\n");
+            break;
+        }
+
         case HCI_EVENT_PIN_CODE_REQUEST: {
             bd_addr_t addr;
             hci_event_pin_code_request_get_bd_addr(packet, addr);
@@ -530,8 +541,24 @@ static void __not_in_flash_func(hci_packet_handler)(uint8_t packet_type, uint16_
         case HCI_EVENT_AUTHENTICATION_COMPLETE: {
             const uint8_t status = hci_event_authentication_complete_get_status(packet);
             const hci_con_handle_t handle = hci_event_authentication_complete_get_connection_handle(packet);
-            printf("[HCI] Authentication complete handle=0x%04X status=0x%02X\n", handle, status);
+            printf("[HCI] Authentication complete handle=0x%04X status=0x%02X addr=%s new_pair=%d\n",
+                   handle, status, bd_addr_to_str(current_device_addr), new_pair);
             if (status != ERROR_CODE_SUCCESS) {
+                // Dump all stored link keys to help diagnose address-mismatch issues
+                btstack_link_key_iterator_t key_it;
+                if (gap_link_key_iterator_init(&key_it)) {
+                    bd_addr_t key_addr;
+                    link_key_t key_val;
+                    link_key_type_t key_type;
+                    int key_count = 0;
+                    while (gap_link_key_iterator_get_next(&key_it, key_addr, key_val, &key_type)) {
+                        printf("[HCI] Stored key[%d]: addr=%s type=%u key=", key_count++, bd_addr_to_str(key_addr), key_type);
+                        for (int i = 0; i < LINK_KEY_LEN; i++) printf("%02X", key_val[i]);
+                        printf("\n");
+                    }
+                    gap_link_key_iterator_done(&key_it);
+                    if (key_count == 0) printf("[HCI] No stored link keys found\n");
+                }
                 printf("[HCI] Authentication failed, drop stored key for %s\n", bd_addr_to_str(current_device_addr));
                 gap_drop_link_key_for_bd_addr(current_device_addr);
                 // gap_inquiry_start(30);
