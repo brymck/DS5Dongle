@@ -526,9 +526,11 @@ static void __not_in_flash_func(hci_packet_handler)(uint8_t packet_type, uint16_
                 printf("[HCI] Authentication failed, drop stored key for %s\n", bd_addr_to_str(current_device_addr));
                 gap_drop_link_key_for_bd_addr(current_device_addr);
                 // gap_inquiry_start(30);
-            } else {
-                hci_send_cmd(&hci_set_connection_encryption, handle, 1);
             }
+            // Encryption is enabled automatically by BTstack after auth
+            // (gap_secure_connections_enable). Calling hci_set_connection_encryption
+            // here too caused a duplicate HCI_EVENT_ENCRYPTION_CHANGE which fired
+            // l2cap_create_channel twice and corrupted BTstack's TLV link key write.
             break;
         }
 
