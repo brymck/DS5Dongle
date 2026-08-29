@@ -538,10 +538,21 @@ static void __not_in_flash_func(hci_packet_handler)(uint8_t packet_type, uint16_
             reverse_bd_addr(&packet[2], addr);
             const uint8_t *key = &packet[2 + BD_ADDR_LEN];
             const uint8_t key_type = packet[2 + BD_ADDR_LEN + LINK_KEY_LEN];
-            printf("[HCI] Link key stored for %s type=%u key=", bd_addr_to_str(addr), key_type);
+            printf("[HCI] Link key received for %s type=%u key=", bd_addr_to_str(addr), key_type);
             for (int i = 0; i < LINK_KEY_LEN; i++) printf("%02X", key[i]);
             printf("\n");
-            // Immediately verify the TLV actually stored the key
+            // The DS5 does not advertise a bonding request BTstack accepts, so
+            // BTstack declines to persist this otherwise-valid key. PS+Share is
+            // our explicit user-authorized pairing path, so store it here.
+            if (new_pair) {
+                link_key_t link_key;
+                memcpy(link_key, key, LINK_KEY_LEN);
+                printf("[HCI] Persisting key from explicit PS+Share pairing\n");
+                gap_store_link_key_for_bd_addr(addr, link_key,
+                                                static_cast<link_key_type_t>(key_type));
+            }
+
+            // Verify the key is retrievable through BTstack's link-key database.
             btstack_link_key_iterator_t tlv_it;
             if (gap_link_key_iterator_init(&tlv_it)) {
                 bd_addr_t vaddr; link_key_t vkey; link_key_type_t vtype;
