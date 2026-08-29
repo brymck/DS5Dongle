@@ -351,10 +351,9 @@ int main() {
     config_load();
     gpio_on_disconnect();
 
+    audio_init();
     bt_init();
     bt_register_data_callback(on_bt_data);
-
-    audio_init();
 
 #if !ENABLE_SERIAL
     watchdog_enable(1000, true);

@@ -344,6 +344,8 @@ void __not_in_flash_func(audio_loop)() {
     }
 }
 
+static volatile bool core1_flash_ready = false;
+
 void audio_init() {
     resampler.SetMode(true, 0, false);
     // 在有线连接的 DS5，其内部的 hd 震动也是工作在 3000Hz 的音频
@@ -379,6 +381,9 @@ void audio_init() {
                                      sizeof(audio_core1_stack) / sizeof(audio_core1_stack[0]));
 #endif
     multicore_launch_core1_with_stack(core1_entry, audio_core1_stack, sizeof(audio_core1_stack));
+    printf("[Audio] Waiting for core1 flash-safe init...\n");
+    while (!core1_flash_ready) tight_loop_contents();
+    printf("[Audio] Core1 flash-safe sync complete\n");
 #endif
 }
 
@@ -463,7 +468,8 @@ void __not_in_flash_func(core1_entry)() {
     // floats QSPI CSn) - the latter makes polling BOOTSEL safe while audio streams on
     // core1. Requires PICO_FLASH_ASSUME_CORE1_SAFE=0.
     flash_safe_execute_core_init();
-    
+    core1_flash_ready = true;
+
     // Allow Core 0 to fully initialize Bluetooth and USB stacks before Core 1 starts processing
     // otherwise the dongle could shut down at initialization
     // TODO: Search for initialization callbacks of core 0
