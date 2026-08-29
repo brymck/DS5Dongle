@@ -12,6 +12,7 @@
 #include "btstack_event.h"
 #include "btstack_tlv.h"
 #include "btstack_tlv_flash_bank.h"
+#include "classic/btstack_link_key_db_tlv.h"
 #include "pico/btstack_flash_bank.h"
 #include "gap.h"
 #include "l2cap.h"
@@ -161,6 +162,8 @@ int bt_init() {
     const btstack_tlv_t *tlv_impl = btstack_tlv_flash_bank_init_instance(
         &btstack_tlv_flash_bank_context, pico_flash_bank_instance(), NULL);
     btstack_tlv_set_instance(tlv_impl, &btstack_tlv_flash_bank_context);
+    hci_set_link_key_db(btstack_link_key_db_tlv_get_instance(
+        tlv_impl, &btstack_tlv_flash_bank_context));
 
     // SSP (Secure Simple Pairing)
     gap_ssp_set_enable(true);
