@@ -140,8 +140,8 @@ void bt_l2cap_init() {
     l2cap_add_event_handler(&l2cap_event_callback_registration);
     // 修复重连后自动断开的关键点
     sdp_init();
-    l2cap_register_service(l2cap_packet_handler, PSM_HID_CONTROL, MTU_CONTROL, LEVEL_0);
-    l2cap_register_service(l2cap_packet_handler, PSM_HID_INTERRUPT, MTU_INTERRUPT, LEVEL_0);
+    l2cap_register_service(l2cap_packet_handler, PSM_HID_CONTROL, MTU_CONTROL, LEVEL_2);
+    l2cap_register_service(l2cap_packet_handler, PSM_HID_INTERRUPT, MTU_INTERRUPT, LEVEL_2);
 
     l2cap_init();
 }
@@ -494,8 +494,17 @@ static void __not_in_flash_func(hci_packet_handler)(uint8_t packet_type, uint16_
                 bt_rssi = 0;
                 bd_addr_copy(current_device_addr, conn_addr);
                 printf("[HCI] ACL connected handle=0x%04X\n", handle);
-                printf("[HCI] Request authentication on handle=0x%04X\n", handle);
-                hci_send_cmd(&hci_authentication_requested, handle);
+                if (new_pair) {
+                    // For Pico-initiated (PS+Share) connections, open the HID control
+                    // channel immediately. LEVEL_2 security on the service drives
+                    // auth+encryption+key storage entirely within BTstack so the link
+                    // key is written to TLV flash before the channel opens.
+                    printf("[L2CAP] Opening HID control channel\n");
+                    l2cap_create_channel(l2cap_packet_handler, current_device_addr, PSM_HID_CONTROL, MTU_CONTROL,
+                                         &hid_control_cid);
+                }
+                // For incoming (PS-button) reconnects, the controller opens HID
+                // channels itself; LEVEL_2 security handles auth the same way.
             } else {
                 device_found = false;
                 new_pair = false;
@@ -540,13 +549,7 @@ static void __not_in_flash_func(hci_packet_handler)(uint8_t packet_type, uint16_
             const uint8_t enabled = hci_event_encryption_change_get_encryption_enabled(packet);
             printf("[HCI] Encryption change handle=0x%04X status=0x%02X enabled=%u\n", handle, status, enabled);
             if (status == ERROR_CODE_SUCCESS && enabled) {
-                printf("[L2CAP] Open HID channels\n");
-                if (new_pair) {
-                    if (hid_control_cid == 0) {
-                        l2cap_create_channel(l2cap_packet_handler, current_device_addr, PSM_HID_CONTROL, MTU_CONTROL,
-                                             &hid_control_cid);
-                    }
-                }
+                printf("[HCI] Encryption enabled\n");
             }
             break;
         }
