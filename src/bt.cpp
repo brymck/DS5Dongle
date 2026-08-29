@@ -538,6 +538,17 @@ static void __not_in_flash_func(hci_packet_handler)(uint8_t packet_type, uint16_
             printf("[HCI] Link key stored for %s type=%u key=", bd_addr_to_str(addr), key_type);
             for (int i = 0; i < LINK_KEY_LEN; i++) printf("%02X", key[i]);
             printf("\n");
+            // Immediately verify the TLV actually stored the key
+            btstack_link_key_iterator_t tlv_it;
+            if (gap_link_key_iterator_init(&tlv_it)) {
+                bd_addr_t vaddr; link_key_t vkey; link_key_type_t vtype;
+                int n = 0;
+                while (gap_link_key_iterator_get_next(&tlv_it, vaddr, vkey, &vtype)) n++;
+                gap_link_key_iterator_done(&tlv_it);
+                printf("[HCI] TLV verify: %d stored key(s)\n", n);
+            } else {
+                printf("[HCI] TLV verify: iterator init FAILED\n");
+            }
             break;
         }
 
