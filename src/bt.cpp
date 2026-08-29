@@ -11,10 +11,6 @@
 #include "audio.h"
 #include "btstack_event.h"
 #include "btstack_tlv.h"
-#include "btstack_tlv_flash_bank.h"
-#include "classic/btstack_link_key_db_tlv.h"
-#include "pico/btstack_flash_bank.h"
-#include "pico/flash.h"
 #include "gap.h"
 #include "l2cap.h"
 #include "pico/cyw43_arch.h"
@@ -74,87 +70,6 @@ static uint16_t hid_control_cid;
 static uint16_t hid_interrupt_cid;
 static bt_data_callback_t bt_data_callback = nullptr;
 static int8_t bt_rssi = 0;
-
-// Wrap the Pico SDK flash bank so TLV writes are read back immediately. The
-// SDK's bank interface cannot report flash_safe_execute failures, which would
-// otherwise look exactly like a successful key store followed by a missing key.
-struct FlashBankDiagnostics {
-    const hal_flash_bank_t *impl;
-    uint32_t write_failures;
-    uint32_t erase_failures;
-};
-
-static FlashBankDiagnostics flash_bank_diagnostics{};
-static volatile uint32_t flash_safety_probe_count = 0;
-
-static void __not_in_flash_func(flash_safety_probe)(void *) {
-    flash_safety_probe_count++;
-}
-
-static void diagnostic_flash_safe_probe(const char *operation) {
-    const int rc = flash_safe_execute(flash_safety_probe, nullptr, 1000);
-    printf("[TLV] flash_safe_execute %s rc=%d\n", operation, rc);
-}
-
-static uint32_t diagnostic_flash_bank_get_size(void *context) {
-    const auto *diagnostics = static_cast<FlashBankDiagnostics *>(context);
-    return diagnostics->impl->get_size(nullptr);
-}
-
-static uint32_t diagnostic_flash_bank_get_alignment(void *context) {
-    const auto *diagnostics = static_cast<FlashBankDiagnostics *>(context);
-    return diagnostics->impl->get_alignment(nullptr);
-}
-
-static void diagnostic_flash_bank_read(void *context, int bank, uint32_t offset, uint8_t *buffer, uint32_t size) {
-    const auto *diagnostics = static_cast<FlashBankDiagnostics *>(context);
-    diagnostics->impl->read(nullptr, bank, offset, buffer, size);
-}
-
-static void diagnostic_flash_bank_erase(void *context, int bank) {
-    auto *diagnostics = static_cast<FlashBankDiagnostics *>(context);
-    diagnostic_flash_safe_probe("before erase");
-    diagnostics->impl->erase(nullptr, bank);
-
-    uint8_t verify[16];
-    diagnostics->impl->read(nullptr, bank, 0, verify, sizeof(verify));
-    for (uint8_t byte : verify) {
-        if (byte != 0xff) {
-            diagnostics->erase_failures++;
-            printf("[TLV] Flash erase verify FAILED bank=%d\n", bank);
-            return;
-        }
-    }
-    printf("[TLV] Flash erase verified bank=%d\n", bank);
-}
-
-static void diagnostic_flash_bank_write(void *context, int bank, uint32_t offset, const uint8_t *data, uint32_t size) {
-    auto *diagnostics = static_cast<FlashBankDiagnostics *>(context);
-    diagnostic_flash_safe_probe("before write");
-    diagnostics->impl->write(nullptr, bank, offset, data, size);
-
-    uint8_t verify[32];
-    for (uint32_t pos = 0; pos < size; pos += sizeof(verify)) {
-        const uint32_t chunk = (size - pos) < sizeof(verify) ? (size - pos) : sizeof(verify);
-        diagnostics->impl->read(nullptr, bank, offset + pos, verify, chunk);
-        if (memcmp(verify, data + pos, chunk) != 0) {
-            diagnostics->write_failures++;
-            printf("[TLV] Flash write verify FAILED bank=%d offset=%lu size=%lu\n",
-                   bank, static_cast<unsigned long>(offset), static_cast<unsigned long>(size));
-            return;
-        }
-    }
-    printf("[TLV] Flash write verified bank=%d offset=%lu size=%lu\n",
-           bank, static_cast<unsigned long>(offset), static_cast<unsigned long>(size));
-}
-
-static const hal_flash_bank_t diagnostic_flash_bank = {
-    diagnostic_flash_bank_get_size,
-    diagnostic_flash_bank_get_alignment,
-    diagnostic_flash_bank_erase,
-    diagnostic_flash_bank_read,
-    diagnostic_flash_bank_write,
-};
 
 unordered_map<uint8_t, vector<uint8_t> > feature_data;
 queue_t send_fifo;
@@ -236,18 +151,6 @@ int bt_init() {
     queue_init(&send_fifo, sizeof(send_element), 10);
 
     bt_l2cap_init();
-
-    // Initialize flash-backed TLV so BTstack can persist and retrieve link keys
-    // across connections. Without this call btstack_tlv_set_instance is never
-    // called, HCI_EVENT_LINK_KEY_NOTIFICATION has nowhere to write, and every
-    // PS-button reconnect fails with HCI_LINK_KEY_REQUEST_NEGATIVE_REPLY.
-    static btstack_tlv_flash_bank_t btstack_tlv_flash_bank_context;
-    flash_bank_diagnostics.impl = pico_flash_bank_instance();
-    const btstack_tlv_t *tlv_impl = btstack_tlv_flash_bank_init_instance(
-        &btstack_tlv_flash_bank_context, &diagnostic_flash_bank, &flash_bank_diagnostics);
-    btstack_tlv_set_instance(tlv_impl, &btstack_tlv_flash_bank_context);
-    hci_set_link_key_db(btstack_link_key_db_tlv_get_instance(
-        tlv_impl, &btstack_tlv_flash_bank_context));
 
     // SSP (Secure Simple Pairing)
     gap_ssp_set_enable(true);
@@ -484,6 +387,19 @@ static void __not_in_flash_func(hci_packet_handler)(uint8_t packet_type, uint16_
                 bt_blacklist_load();
                 gap_inquiry_start(30);
                 bt_inquiring = true;
+
+                // Inject any persisted link key into BTstack's in-memory DB so
+                // PS-button reconnects succeed after a Pico reboot.
+                const auto& cfg = get_config();
+                if (cfg.link_key_valid == 1) {
+                    bd_addr_t lk_addr;
+                    memcpy(lk_addr, cfg.link_key_bd_addr, 6);
+                    link_key_t lk;
+                    memcpy(lk, cfg.link_key_data, 16);
+                    gap_store_link_key_for_bd_addr(lk_addr, lk,
+                        static_cast<link_key_type_t>(cfg.link_key_type));
+                    printf("[BT] Loaded persisted link key for %s\n", bd_addr_to_str(lk_addr));
+                }
             }
             break;
         }
@@ -622,30 +538,27 @@ static void __not_in_flash_func(hci_packet_handler)(uint8_t packet_type, uint16_
             reverse_bd_addr(&packet[2], addr);
             const uint8_t *key = &packet[2 + BD_ADDR_LEN];
             const uint8_t key_type = packet[2 + BD_ADDR_LEN + LINK_KEY_LEN];
-            printf("[HCI] Link key received for %s type=%u key=", bd_addr_to_str(addr), key_type);
-            for (int i = 0; i < LINK_KEY_LEN; i++) printf("%02X", key[i]);
-            printf("\n");
-            // The DS5 does not advertise a bonding request BTstack accepts, so
-            // BTstack declines to persist this otherwise-valid key. PS+Share is
-            // our explicit user-authorized pairing path, so store it here.
-            if (new_pair) {
-                link_key_t link_key;
-                memcpy(link_key, key, LINK_KEY_LEN);
-                printf("[HCI] Persisting key from explicit PS+Share pairing\n");
-                gap_store_link_key_for_bd_addr(addr, link_key,
-                                                static_cast<link_key_type_t>(key_type));
-            }
+            printf("[HCI] Link key received for %s type=%u\n", bd_addr_to_str(addr), key_type);
 
-            // Verify the key is retrievable through BTstack's link-key database.
-            btstack_link_key_iterator_t tlv_it;
-            if (gap_link_key_iterator_init(&tlv_it)) {
-                bd_addr_t vaddr; link_key_t vkey; link_key_type_t vtype;
-                int n = 0;
-                while (gap_link_key_iterator_get_next(&tlv_it, vaddr, vkey, &vtype)) n++;
-                gap_link_key_iterator_done(&tlv_it);
-                printf("[HCI] TLV verify: %d stored key(s)\n", n);
+            // Store in BTstack's in-memory DB for within-session reconnects.
+            link_key_t link_key;
+            memcpy(link_key, key, LINK_KEY_LEN);
+            gap_store_link_key_for_bd_addr(addr, link_key,
+                                           static_cast<link_key_type_t>(key_type));
+
+            // Persist to Config for cross-reboot reconnects. config_save() uses a
+            // 1000ms flash_safe_execute timeout (vs. btstack_tlv_flash_bank's UINT32_MAX
+            // which hangs the system). At pairing time audio isn't flowing so core1 is
+            // idle and the save should succeed.
+            auto& cfg = get_config();
+            memcpy(cfg.link_key_bd_addr, addr, 6);
+            memcpy(cfg.link_key_data, key, 16);
+            cfg.link_key_type = key_type;
+            cfg.link_key_valid = 1;
+            if (!config_save()) {
+                printf("[HCI] Warning: link key flash save failed, key in RAM only\n");
             } else {
-                printf("[HCI] TLV verify: iterator init FAILED\n");
+                printf("[HCI] Link key persisted to flash for %s\n", bd_addr_to_str(addr));
             }
             break;
         }
@@ -681,6 +594,14 @@ static void __not_in_flash_func(hci_packet_handler)(uint8_t packet_type, uint16_
                 }
                 printf("[HCI] Authentication failed, drop stored key for %s\n", bd_addr_to_str(current_device_addr));
                 gap_drop_link_key_for_bd_addr(current_device_addr);
+                // Clear the Config-persisted key for this address so the next boot
+                // doesn't attempt authentication with a stale key.
+                auto& cfg = get_config();
+                if (cfg.link_key_valid == 1 &&
+                    memcmp(cfg.link_key_bd_addr, current_device_addr, 6) == 0) {
+                    cfg.link_key_valid = 0;
+                    config_save();
+                }
                 // gap_inquiry_start(30);
             }
             // Encryption is enabled automatically by BTstack after auth

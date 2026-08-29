@@ -27,6 +27,10 @@ struct __attribute__((packed)) Config_body {
     uint8_t lock_volume; // bool
     uint8_t status_gpio_pin; // board-usable GPIO, 0xff: disabled
     uint8_t status_gpio_mode; // 0: high while connected, 1: button pulse on connect
+    uint8_t link_key_valid;        // 1 = valid persisted key
+    uint8_t link_key_type;         // link_key_type_t cast to uint8_t
+    uint8_t link_key_bd_addr[6];   // paired device BD address
+    uint8_t link_key_data[16];     // LINK_KEY_LEN = 16
 };
 
 struct __attribute__((packed)) Config {
