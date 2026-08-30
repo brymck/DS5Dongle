@@ -17,7 +17,7 @@
 #include "pico/flash.h"
 
 constexpr uint32_t CONFIG_MAGIC = 0x66ccff00;
-constexpr uint16_t CONFIG_VERSION = 6; // 如果想要强制重置配置，再更新 CONFIG_VERSION。
+constexpr uint16_t CONFIG_VERSION = 5; // 如果想要强制重置配置，再更新 CONFIG_VERSION。
 constexpr uint32_t CONFIG_FLASH_OFFSET = PICO_FLASH_BANK_STORAGE_OFFSET - FLASH_SECTOR_SIZE;
 static Config config{};
 bool is_dse = false;
@@ -139,10 +139,6 @@ void config_valid() {
     if (body->status_gpio_mode > STATUS_GPIO_MODE_BUTTON) {
         body->status_gpio_mode = 0;
         printf("[Config] status_gpio_mode is invalid\n");
-    }
-    if (body->link_key_valid > 1) {
-        body->link_key_valid = 0;
-        printf("[Config] link_key_valid is invalid\n");
     }
 }
 

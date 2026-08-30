@@ -118,6 +118,7 @@ add_executable(ds5-bridge
         src/button_functions.cpp
         src/dse.cpp
         src/config.cpp
+        src/link_key_store.cpp
         src/status_gpio.cpp
         src/cmd.cpp
         src/ram_mem.c
@@ -304,6 +305,7 @@ target_compile_definitions(ds5-bridge PRIVATE
         ENABLE_BATT_LED=${ENABLE_BATT_LED_VALUE}
         SYS_CLOCK_KHZ=${SYS_CLOCK_KHZ_VALUE}
         DISABLE_SPEAKER_PROC=${DISABLE_SPEAKER_PROC_VALUE}
+        PICO_BTSTACK_TLV_NONE=1
 )
 
 # Wake-on-PS + Xbox Game Bar are now in the base firmware, gated at runtime by the

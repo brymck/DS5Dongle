@@ -11,13 +11,16 @@
 #include "audio.h"
 #include "btstack_event.h"
 #include "btstack_tlv.h"
+#include "classic/btstack_link_key_db.h"
 #include "gap.h"
+#include "hci.h"
 #include "l2cap.h"
 #include "pico/cyw43_arch.h"
 #include "utils.h"
 #include "bsp/board_api.h"
 #include "classic/sdp_server.h"
 #include "config.h"
+#include "link_key_store.h"
 #include "status_gpio.h"
 #include "dse.h"
 #include "fake_ds5.h"
@@ -136,6 +139,84 @@ void bt_get_signal_strength(int8_t *rssi) {
     }
 }
 
+// Config-backed single-slot link_key_db. Replaces pico-sdk's TLV-backed
+// implementation (PICO_BTSTACK_TLV_NONE=1 prevents it from being auto-installed).
+static void lkdb_open(void) {}
+static void lkdb_close(void) {}
+static void lkdb_set_local_bd_addr(bd_addr_t bd_addr) { (void)bd_addr; }
+
+static LinkKeyEntry lk_ram{};
+static bool lk_loaded = false;
+
+static void lk_ensure_loaded() {
+    if (!lk_loaded) {
+        lk_loaded = true;
+        lk_load(&lk_ram);
+    }
+}
+
+static int lkdb_get(bd_addr_t addr, link_key_t key, link_key_type_t *type) {
+    lk_ensure_loaded();
+    if (lk_ram.valid != 1) return 0;
+    if (memcmp(lk_ram.bd_addr, addr, 6) != 0) return 0;
+    memcpy(key, lk_ram.key, LINK_KEY_LEN);
+    *type = static_cast<link_key_type_t>(lk_ram.key_type);
+    return 1;
+}
+
+static void lkdb_put(bd_addr_t addr, link_key_t key, link_key_type_t type) {
+    lk_ram.magic = 0x4C4B5354u;
+    memcpy(lk_ram.bd_addr, addr, 6);
+    memcpy(lk_ram.key, key, LINK_KEY_LEN);
+    lk_ram.key_type = static_cast<uint8_t>(type);
+    lk_ram.valid = 1;
+    lk_loaded = true;
+    if (!lk_save(lk_ram)) {
+        printf("[LK] Warning: link key save failed\n");
+    } else {
+        printf("[LK] Link key saved for %s\n", bd_addr_to_str(addr));
+    }
+}
+
+static void lkdb_delete(bd_addr_t addr) {
+    lk_ensure_loaded();
+    if (lk_ram.valid == 1 && memcmp(lk_ram.bd_addr, addr, 6) == 0) {
+        lk_ram.valid = 0;
+        lk_clear();
+        printf("[LK] Link key deleted for %s\n", bd_addr_to_str(addr));
+    }
+}
+
+static int lkdb_iter_init(btstack_link_key_iterator_t *it) {
+    lk_ensure_loaded();
+    it->context = nullptr;
+    return lk_ram.valid == 1 ? 1 : 0;
+}
+
+static int lkdb_iter_next(btstack_link_key_iterator_t *it, bd_addr_t addr, link_key_t key, link_key_type_t *type) {
+    if (it->context) return 0;
+    if (lk_ram.valid != 1) return 0;
+    memcpy(addr, lk_ram.bd_addr, 6);
+    memcpy(key, lk_ram.key, LINK_KEY_LEN);
+    *type = static_cast<link_key_type_t>(lk_ram.key_type);
+    it->context = (void*)1;
+    return 1;
+}
+
+static void lkdb_iter_done(btstack_link_key_iterator_t *it) { (void)it; }
+
+static const btstack_link_key_db_t config_link_key_db = {
+    lkdb_open,
+    lkdb_set_local_bd_addr,
+    lkdb_close,
+    lkdb_get,
+    lkdb_put,
+    lkdb_delete,
+    lkdb_iter_init,
+    lkdb_iter_next,
+    lkdb_iter_done,
+};
+
 void bt_l2cap_init() {
     l2cap_event_callback_registration.callback = &l2cap_packet_handler;
     l2cap_add_event_handler(&l2cap_event_callback_registration);
@@ -164,6 +245,7 @@ int bt_init() {
     hci_event_callback_registration.callback = &hci_packet_handler;
     hci_add_event_handler(&hci_event_callback_registration);
 
+    hci_set_link_key_db(&config_link_key_db);
     hci_power_control(HCI_POWER_ON);
     return 0;
 }
@@ -387,19 +469,6 @@ static void __not_in_flash_func(hci_packet_handler)(uint8_t packet_type, uint16_
                 bt_blacklist_load();
                 gap_inquiry_start(30);
                 bt_inquiring = true;
-
-                // Inject any persisted link key into BTstack's in-memory DB so
-                // PS-button reconnects succeed after a Pico reboot.
-                const auto& cfg = get_config();
-                if (cfg.link_key_valid == 1) {
-                    bd_addr_t lk_addr;
-                    memcpy(lk_addr, cfg.link_key_bd_addr, 6);
-                    link_key_t lk;
-                    memcpy(lk, cfg.link_key_data, 16);
-                    gap_store_link_key_for_bd_addr(lk_addr, lk,
-                        static_cast<link_key_type_t>(cfg.link_key_type));
-                    printf("[BT] Loaded persisted link key for %s\n", bd_addr_to_str(lk_addr));
-                }
             }
             break;
         }
@@ -536,30 +605,9 @@ static void __not_in_flash_func(hci_packet_handler)(uint8_t packet_type, uint16_
         case HCI_EVENT_LINK_KEY_NOTIFICATION: {
             bd_addr_t addr;
             reverse_bd_addr(&packet[2], addr);
-            const uint8_t *key = &packet[2 + BD_ADDR_LEN];
-            const uint8_t key_type = packet[2 + BD_ADDR_LEN + LINK_KEY_LEN];
-            printf("[HCI] Link key received for %s type=%u\n", bd_addr_to_str(addr), key_type);
-
-            // Store in BTstack's in-memory DB for within-session reconnects.
-            link_key_t link_key;
-            memcpy(link_key, key, LINK_KEY_LEN);
-            gap_store_link_key_for_bd_addr(addr, link_key,
-                                           static_cast<link_key_type_t>(key_type));
-
-            // Persist to Config for cross-reboot reconnects. config_save() uses a
-            // 1000ms flash_safe_execute timeout (vs. btstack_tlv_flash_bank's UINT32_MAX
-            // which hangs the system). At pairing time audio isn't flowing so core1 is
-            // idle and the save should succeed.
-            auto& cfg = get_config();
-            memcpy(cfg.link_key_bd_addr, addr, 6);
-            memcpy(cfg.link_key_data, key, 16);
-            cfg.link_key_type = key_type;
-            cfg.link_key_valid = 1;
-            if (!config_save()) {
-                printf("[HCI] Warning: link key flash save failed, key in RAM only\n");
-            } else {
-                printf("[HCI] Link key persisted to flash for %s\n", bd_addr_to_str(addr));
-            }
+            printf("[HCI] Link key received for %s type=%u\n",
+                   bd_addr_to_str(addr), packet[2 + BD_ADDR_LEN + LINK_KEY_LEN]);
+            // BTstack called lkdb_put() internally; config_save() already done.
             break;
         }
 
@@ -593,15 +641,7 @@ static void __not_in_flash_func(hci_packet_handler)(uint8_t packet_type, uint16_
                     if (key_count == 0) printf("[HCI] No stored link keys found\n");
                 }
                 printf("[HCI] Authentication failed, drop stored key for %s\n", bd_addr_to_str(current_device_addr));
-                gap_drop_link_key_for_bd_addr(current_device_addr);
-                // Clear the Config-persisted key for this address so the next boot
-                // doesn't attempt authentication with a stale key.
-                auto& cfg = get_config();
-                if (cfg.link_key_valid == 1 &&
-                    memcmp(cfg.link_key_bd_addr, current_device_addr, 6) == 0) {
-                    cfg.link_key_valid = 0;
-                    config_save();
-                }
+                gap_drop_link_key_for_bd_addr(current_device_addr); // calls lkdb_delete -> config_save
                 // gap_inquiry_start(30);
             }
             // Encryption is enabled automatically by BTstack after auth
