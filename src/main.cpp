@@ -313,6 +313,23 @@ int main() {
     sleep_ms(150);
 #endif
 
+    // Initialize the critical section for the report buffer
+    critical_section_init(&report_cs);
+    wake_init();
+
+    config_load();
+    gpio_on_disconnect();
+
+    // Launch core1 and wait for flash_safe_execute_core_init() to complete
+    // BEFORE cyw43_arch_init().  cyw43_arch_init() calls setup_tlv() which
+    // calls btstack_tlv_flash_bank_init_instance(), and that function uses
+    // flash_safe_execute() to write the TLV magic to flash.  With
+    // PICO_FLASH_ASSUME_CORE1_SAFE=0, flash_safe_execute() returns
+    // PICO_ERROR_NOT_PERMITTED if core1 has not registered via
+    // flash_safe_execute_core_init(), leaving the TLV bank in a corrupt state
+    // and silently breaking all subsequent link-key stores.
+    audio_core1_flash_init();
+
     if (cyw43_arch_init()) {
         printf("Failed to initialize CYW43\n");
         return 1;
@@ -343,13 +360,6 @@ int main() {
         printf("Clean boot\n");
     }
 #endif
-
-    // Initialize the critical section for the report buffer
-    critical_section_init(&report_cs);
-    wake_init();
-
-    config_load();
-    gpio_on_disconnect();
 
     bt_init();
     bt_register_data_callback(on_bt_data);

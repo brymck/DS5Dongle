@@ -7,6 +7,7 @@
 
 #include <cstdint>
 
+void audio_core1_flash_init();
 void audio_init();
 void audio_loop();
 void core1_entry();
