@@ -15,6 +15,7 @@
 
 .PARAMETER Variant
     standard (default) - normal firmware.
+    serial             - adds -DENABLE_SERIAL=ON (serial without verbose).
     debug              - adds -DENABLE_SERIAL=ON -DENABLE_VERBOSE=ON.
     wake               - adds -DENABLE_WAKE_HID=ON (Wake-on-PS build).
 
@@ -45,7 +46,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('standard', 'debug', 'wake')]
+    [ValidateSet('standard', 'serial', 'debug', 'wake')]
     [string]$Variant = 'standard',
     [switch]$Clean,
     # Project to build when this script is run standalone (not from inside a
@@ -463,8 +464,9 @@ $cmakeArgs = @(
     "-DPython3_EXECUTABLE=$($PythonExe -replace '\\','/')"
 )
 switch ($Variant) {
-    'debug' { $cmakeArgs += @('-DENABLE_SERIAL=ON', '-DENABLE_VERBOSE=ON') }
-    'wake'  { $cmakeArgs += @('-DENABLE_WAKE_HID=ON') }
+    'serial' { $cmakeArgs += @('-DENABLE_SERIAL=ON') }
+    'debug'  { $cmakeArgs += @('-DENABLE_SERIAL=ON', '-DENABLE_VERBOSE=ON') }
+    'wake'   { $cmakeArgs += @('-DENABLE_WAKE_HID=ON') }
 }
 
 Info "Configuring: cmake $($cmakeArgs -join ' ')"
