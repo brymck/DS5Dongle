@@ -527,6 +527,14 @@ static void __not_in_flash_func(hci_packet_handler)(uint8_t packet_type, uint16_
             break;
         }
 
+        case HCI_EVENT_LINK_KEY_NOTIFICATION: {
+            bd_addr_t addr;
+            reverse_bytes(&packet[2], addr, 6);
+            const uint8_t key_type = packet[24];
+            printf("[HCI] Link key stored for %s type=%u\n", bd_addr_to_str(addr), (unsigned) key_type);
+            break;
+        }
+
         case HCI_EVENT_USER_CONFIRMATION_REQUEST: {
             bd_addr_t addr;
             hci_event_user_confirmation_request_get_bd_addr(packet, addr);

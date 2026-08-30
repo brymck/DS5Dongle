@@ -344,6 +344,24 @@ void __not_in_flash_func(audio_loop)() {
     }
 }
 
+static volatile bool core1_flash_ready = false;
+static volatile bool core1_processing_ready = false;
+
+// Launch core1 and wait for flash-safe execution to be initialized.
+// Must be called before bt_init() so that flash_safe_execute() on core0 can
+// properly lock out core1 during TLV writes (link-key persistence).
+void audio_core1_flash_init() {
+#if !DISABLE_SPEAKER_PROC
+#if ENABLE_DEBUG
+    // 通常 stack 最大使用 25836 bytes 即 stack[6459]
+    debug_fill_core1_stack_watermark(audio_core1_stack,
+                                     sizeof(audio_core1_stack) / sizeof(audio_core1_stack[0]));
+#endif
+    multicore_launch_core1_with_stack(core1_entry, audio_core1_stack, sizeof(audio_core1_stack));
+    while (!core1_flash_ready) tight_loop_contents();
+#endif
+}
+
 void audio_init() {
     resampler.SetMode(true, 0, false);
     // 在有线连接的 DS5，其内部的 hd 震动也是工作在 3000Hz 的音频
@@ -373,13 +391,10 @@ void audio_init() {
 #if !DISABLE_SPEAKER_PROC
     queue_init(&audio_fifo, sizeof(audio_raw_element), 2);
     queue_init(&audio_spk_fifo, sizeof(audio_spk_element), 2);
-#if ENABLE_DEBUG
-    // 通常 stack 最大使用 25836 bytes 即 stack[6459]
-    debug_fill_core1_stack_watermark(audio_core1_stack,
-                                     sizeof(audio_core1_stack) / sizeof(audio_core1_stack[0]));
 #endif
-    multicore_launch_core1_with_stack(core1_entry, audio_core1_stack, sizeof(audio_core1_stack));
-#endif
+    // Unblock core1 now that queues are ready — it can proceed to Opus init
+    // and the audio processing loop.
+    core1_processing_ready = true;
 }
 
 static OpusEncoder *encoder;
@@ -463,11 +478,12 @@ void __not_in_flash_func(core1_entry)() {
     // floats QSPI CSn) - the latter makes polling BOOTSEL safe while audio streams on
     // core1. Requires PICO_FLASH_ASSUME_CORE1_SAFE=0.
     flash_safe_execute_core_init();
-    
-    // Allow Core 0 to fully initialize Bluetooth and USB stacks before Core 1 starts processing
-    // otherwise the dongle could shut down at initialization
-    // TODO: Search for initialization callbacks of core 0
-    sleep_ms(300);
+    core1_flash_ready = true;
+
+    // Wait for Core 0 to finish allocating audio queues before proceeding.
+    // This replaces the old sleep_ms(300) with a proper synchronization point —
+    // core0 sets core1_processing_ready after audio_init() finishes queue setup.
+    while (!core1_processing_ready) tight_loop_contents();
 
     int error = 0;
     encoder = opus_encoder_create(48000, 2,OPUS_APPLICATION_AUDIO, &error);
